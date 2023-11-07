@@ -43,7 +43,7 @@ import se.sics.mspsim.util.ArrayFIFO;
 import se.sics.mspsim.util.CCITT_CRC;
 import se.sics.mspsim.util.Utils;
 
-public class Transceiver extends Chip implements USARTListener, PacketListener {
+public class Transceiver extends Chip implements USARTListener, PacketListener, PacketSource {
 
   public enum Reg {
     SNOP, SXOSCON, STXCAL, SRXON, /* 0x00 */
@@ -171,6 +171,8 @@ public class Transceiver extends Chip implements USARTListener, PacketListener {
 
   public static final int SHORT_ADDRESS = 2;
   public static final int LONG_ADDRESS = 3;
+
+  public static final int TXFIFO_SZ = RAM_RXFIFO - RAM_TXFIFO;
 
 
   // The Operation modes of the CC2420
@@ -385,6 +387,51 @@ public class Transceiver extends Chip implements USARTListener, PacketListener {
       }
     }
   };
+
+  private final TimeEvent txCalibrationDoneEvent = new TimeEvent(0, "TX Calibration Done") {
+    @Override
+    public void execute(long t) {
+      assert stateMachine == RadioState.TX_CALIBRATE;
+      setState(RadioState.TX_PREAMBLE);
+    }
+  };
+
+  private final TimeEvent txPreambleDoneEvent = new TimeEvent(0, "TX Preamble Done") {
+    @Override
+    public void execute(long t) {
+      assert stateMachine == RadioState.TX_PREAMBLE;
+      setSFD(true);
+      setState(RadioState.TX_FRAME);
+    }
+  };
+
+  private final TimeEvent txFrameDoneEvent = new TimeEvent(0, "TX Frame Done") {
+    @Override
+    public void execute(long t) {
+      assert stateMachine == RadioState.RX_FRAME;
+      assert ongoingTxPacket != null;
+      if (logLevel > INFO) log("Completed Transmission.");
+
+      if (packetListener != null) {
+        /* Notify the delivery end. */
+        packetListener.packetDeliveryEnd(ongoingTxPacket.id(), ongoingTxPacket);
+      }
+      ongoingTxPacket = null;
+
+      status &= ~STATUS_TX_ACTIVE;
+      setSFD(false);
+      if (overflow) {
+        /* TODO: is it going back to overflow here ?=? */
+        setState(RadioState.RX_OVERFLOW);
+      } else {
+        setState(RadioState.RX_CALIBRATE);
+      }
+      /* Back to RX ON */
+      setMode(MODE_RX_ON);
+      txfifoFlush = true;
+    }
+  };
+
   private boolean currentCCA;
   private boolean currentSFD;
   private boolean currentFIFO;
@@ -477,30 +524,42 @@ public class Transceiver extends Chip implements USARTListener, PacketListener {
         setMode(MODE_RX_ON);
         break;
 
-      case TX_CALIBRATE:
+      case TX_CALIBRATE: {
+
         /* 12 symbols calibration, and one byte's wait since we deliver immediately
          * to listener when after calibration?
          */
-        setSymbolEvent(12 + 2);
+        ongoingTxPacket = packetFromTxFifo();
         setMode(MODE_TXRX_ON);
-        break;
+        final double latency = (12 + 2 /* Not quite sure */) * SYMBOL_PERIOD;
+        cpu.scheduleTimeEventMillis(txCalibrationDoneEvent, latency);
+      }   
+      break;
 
-      case TX_PREAMBLE:
-        shrPos = 0;
-        SHR[0] = 0;
-        SHR[1] = 0;
-        SHR[2] = 0;
-        SHR[3] = 0;
-        SHR[4] = 0x7A;
-        shrNext();
-        break;
+      case TX_PREAMBLE: {
+        /* The TX starts here */
+        assert ongoingTxPacket != null;
+        if (logLevel > INFO) log("TX starts: " + ongoingTxPacket.id());
+        if (packetListener != null) {
+          /* Notify the delivery start */
+          packetListener.packetDeliveryStart(ongoingTxPacket.id());
+        }
+        final double latency = 5 * 2 * SYMBOL_PERIOD;
+        cpu.scheduleTimeEventMillis(txPreambleDoneEvent, latency);
+      }
+      break;
 
-      case TX_FRAME:
+      case TX_FRAME: {
+        assert ongoingTxPacket != null;
         txfifoPos = 0;
         // Reset CRC ok flag to disable software acknowledgments until next received packet
         crcOk = false;
-        txNext();
-        break;
+
+        /* We do not actually do CRC here, but add the transmission latency for the 2 CRC bytes. */
+        final double txLatency = (ongoingTxPacket.data().length + 2) * 2 * SYMBOL_PERIOD;
+        cpu.scheduleTimeEventMillis(txFrameDoneEvent, txLatency);
+      }
+      break;
 
       case RX_WAIT:
         setSymbolEvent(8);
@@ -1456,6 +1515,59 @@ public class Transceiver extends Chip implements USARTListener, PacketListener {
 
   public void setRegister(int register, int data) {
     registers[register] = data;
+  }
+
+  /*****************************************************************************
+   * The Packet Layer
+   *****************************************************************************/
+  private long txCounter = 0;
+  private Packet ongoingTxPacket = null;
+
+  /**
+   * Generate a new packet from the TX FIFIO
+   */
+  private Packet packetFromTxFifo() {
+    int channel = memory[RAM_TXFIFO] & 0xff;
+    int len = memory[RAM_TXFIFO+1] & 0xff;
+    final int maxlen = TXFIFO_SZ - 2;
+    if (len > maxlen) {
+      logger.logw(this, WarningType.EXECUTION, "Transceiver: Warning - packet size too large: " + (len & 0xff));
+      len = maxlen;
+    }
+
+    byte data[] = new byte[len];
+    for (int i = 0; i < len; i++)
+      data[i] = (byte)(memory[RAM_TXFIFO + 2 + i] & 0xff);
+    var id = new PacketId(Transceiver.this, channel, txCounter++);
+    return new Packet(id, data);
+  }
+
+  /*****************************************************************************
+   * PakcetListener APIs
+   *****************************************************************************/
+  @Override
+  public void packetDeliveryStart(PacketId id) {
+    /* TODO */
+  }
+
+  @Override
+  public void packetDeliveryEnd(PacketId id, Packet packet) {
+    /* TODO */
+  }
+
+  /*****************************************************************************
+   * PakcetSource APIs
+   *****************************************************************************/
+  private PacketListener packetListener = null;
+
+  @Override
+  public void addPacketListener(PacketListener p) {
+    packetListener = PacketListener.Proxy.INSTANCE.add(packetListener, p);
+  }
+
+  @Override
+  public void removePacketListener(PacketListener p) {
+    packetListener = PacketListener.Proxy.INSTANCE.remove(packetListener, p);
   }
 
   /*****************************************************************************
