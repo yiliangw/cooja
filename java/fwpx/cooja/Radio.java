@@ -113,10 +113,14 @@ public final class Radio extends org.contikios.cooja.interfaces.Radio implements
    *****************************************************************************/
 
   @Override
-  public void signalReceptionStart() {}
+  public void signalReceptionStart() {
+    /* Do nothing here. We rely on the CustomObject (TxStart) notifications. */
+  }
 
   @Override
-  public void signalReceptionEnd() {}
+  public void signalReceptionEnd() {
+    /* Do nothing here. We rely on the CustomObject (TxEnd) notifications. */
+  }
 
   @Override
   public RadioPacket getLastPacketTransmitted() {
@@ -126,6 +130,16 @@ public final class Radio extends org.contikios.cooja.interfaces.Radio implements
   @Override
   public boolean isTransmitting() {
     return isTransmitting;
+  }
+
+  @Override
+  public int getChannel() {
+    return -1;
+  }
+
+  @Override
+  public void interfereAnyReception() {
+    /* TODO: Clear all the reception states. This will be called  */
   }
 
   /*****************************************************************************
@@ -161,5 +175,12 @@ public final class Radio extends org.contikios.cooja.interfaces.Radio implements
   @Override
   public TxStateChange getLastCustomDataReceived() {
     return lastTxStateChangeReceived;
+  }
+
+  /*****************************************************************************
+   * Other methods
+   *****************************************************************************/
+  public PacketId getOutgoingPacketId() {
+    return outgoingPacketId;
   }
 }
