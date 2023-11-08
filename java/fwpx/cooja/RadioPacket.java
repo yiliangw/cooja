@@ -13,4 +13,6 @@ public class RadioPacket implements org.contikios.cooja.RadioPacket {
   public byte[] getPacketData() {
     return packet.data();
   }
+
+  public Packet getPacket() { return packet; }
 }

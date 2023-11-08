@@ -3,25 +3,25 @@ package fwpx.mspsim;
 import se.sics.mspsim.util.ProxySupport;
 
 public interface PacketListener {
-  void packetDeliveryStart(PacketId id);
-  void packetDeliveryEnd(PacketId id, Packet packet);
+  void packetDeliveryStarted(PacketId id);
+  void packetDeliveryFinished(PacketId id, Packet packet);
 
   class Proxy extends ProxySupport<PacketListener> implements PacketListener {
     static final Proxy INSTANCE = new Proxy();
 
     @Override
-    public void packetDeliveryStart(PacketId id) {
+    public void packetDeliveryStarted(PacketId id) {
       PacketListener[] listeners = this.listeners;
       for(PacketListener listener : listeners) {
-        listener.packetDeliveryStart(id);
+        listener.packetDeliveryStarted(id);
       }
     }
 
     @Override
-    public void packetDeliveryEnd(PacketId id, Packet packet) {
+    public void packetDeliveryFinished(PacketId id, Packet packet) {
       PacketListener[] listeners = this.listeners;
       for(PacketListener listener : listeners) {
-        listener.packetDeliveryEnd(id, packet);
+        listener.packetDeliveryFinished(id, packet);
       }
     }
   }

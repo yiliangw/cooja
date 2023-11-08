@@ -1,9 +1,6 @@
 package fwpx.cooja;
 
-import fwpx.mspsim.Packet;
-import fwpx.mspsim.PacketId;
-import fwpx.mspsim.PacketListener;
-import fwpx.mspsim.Transceiver;
+import fwpx.mspsim.*;
 import org.contikios.cooja.Mote;
 import org.contikios.cooja.interfaces.CustomDataRadio;
 import org.contikios.cooja.mspmote.MspMote;
@@ -12,7 +9,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
-public final class Radio extends org.contikios.cooja.interfaces.Radio implements CustomDataRadio, PacketListener {
+public final class Radio extends org.contikios.cooja.interfaces.Radio implements CustomDataRadio {
   private static final Logger logger = LoggerFactory.getLogger(Radio.class);
 
   private static abstract class TxStateChange {}
@@ -42,6 +39,7 @@ public final class Radio extends org.contikios.cooja.interfaces.Radio implements
 
   private PacketId outgoingPacketId = null;
   private RadioPacket lastOutgoingPacket = null;
+  private RadioPacket lastIncomingPacket = null;
 
   private TxStateChange lastTxStateChangeTransmitted = null;
   private TxStateChange lastTxStateChangeReceived = null;
@@ -60,7 +58,7 @@ public final class Radio extends org.contikios.cooja.interfaces.Radio implements
 
     trx.addPacketListener(new PacketListener() {
       @Override
-      public void packetDeliveryStart(PacketId id) {
+      public void packetDeliveryStarted(PacketId id) {
         if (isTransmitting()) {
           logger.error("Detected concurrent transmitting");
           return;
@@ -80,7 +78,7 @@ public final class Radio extends org.contikios.cooja.interfaces.Radio implements
       }
 
       @Override
-      public void packetDeliveryEnd(PacketId id, Packet packet) {
+      public void packetDeliveryFinished(PacketId id, Packet packet) {
         if (!isTransmitting()) {
           logger.error("packetDeliveryEnd when not transmitting");
           return;
@@ -128,6 +126,11 @@ public final class Radio extends org.contikios.cooja.interfaces.Radio implements
   }
 
   @Override
+  public RadioPacket getLastPacketReceived() {
+    return lastIncomingPacket;
+  }
+
+  @Override
   public boolean isTransmitting() {
     return isTransmitting;
   }
@@ -156,9 +159,10 @@ public final class Radio extends org.contikios.cooja.interfaces.Radio implements
     if (data instanceof TxStateChange change) {
       lastTxStateChangeReceived = change;
       if (data instanceof TxStart ts) {
-        /* TODO: */
+        trx.packetDeliveryStarted(ts.id);
       } else if (data instanceof TxEnd te) {
-        /* TODO: */
+        lastIncomingPacket = te.packet;
+        trx.packetDeliveryFinished(te.id, te.packet.getPacket());
       } else {
         logger.error("Unknown TxStateChange object: {}", data);
       }
