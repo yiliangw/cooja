@@ -338,27 +338,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     }
   };
 
-  private final TimeEvent sendEvent = new TimeEvent(0, "CC2420 Send") {
-    @Override
-    public void execute(long t) {
-      txNext();
-    }
-  };
-
-  private final TimeEvent ackEvent = new TimeEvent(0, "CC2420 Ack") {
-    @Override
-    public void execute(long t) {
-      ackNext();
-    }
-  };
-
-  private final TimeEvent shrEvent = new TimeEvent(0, "CC2420 SHR") {
-    @Override
-    public void execute(long t) {
-      shrNext();
-    }
-  };
-
   private final TimeEvent symbolEvent = new TimeEvent(0, "CC2420 Symbol") {
     @Override
     public void execute(long t) {
@@ -576,20 +555,10 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         setMode(MODE_TXRX_ON);
         break;
       case TX_ACK_PREAMBLE:
-        /* same as normal preamble ?? */
-        shrPos = 0;
-        SHR[0] = 0;
-        SHR[1] = 0;
-        SHR[2] = 0;
-        SHR[3] = 0;
-        SHR[4] = 0x7A;
-        shrNext();
+        logw(WarningType.EMULATION_ERROR, "setState(TX_ACK_PREAMBLE) not implemented");
         break;
       case TX_ACK:
-        ackPos = 0;
-        // Reset CRC ok flag to disable software acknowledgments until next received packet
-        crcOk = false;
-        ackNext();
+        logw(WarningType.EMULATION_ERROR, "setState(TX_ACK) not implemented");
         break;
       case RX_FRAME:
         /* mark position of frame start - for rejecting when address is wrong */
@@ -653,15 +622,8 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         autoAck = (data & AUTOACK) != 0;
         break;
       case REG_FSCTRL: {
-        ChannelListener listener = this.channelListener;
-        if (listener != null) {
-          int oldChannel = activeChannel;
-          updateActiveFrequency();
-          if (oldChannel != activeChannel) {
-            listener.channelChanged(activeChannel);
-          }
-        }
-        break;
+        logw(WarningType.EXECUTION, "setReg(FSCTRL) not supported");
+        return;
       }
     }
     configurationChanged(address, oldValue, data);
@@ -935,104 +897,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     }
   }
 
-  private void shrNext() {
-    if(shrPos == 5) {
-      // Set SFD high
-      setSFD(true);
-
-      if (stateMachine == RadioState.TX_PREAMBLE) {
-        setState(RadioState.TX_FRAME);
-      } else if (stateMachine == RadioState.TX_ACK_PREAMBLE) {
-        setState(RadioState.TX_ACK);
-      } else {
-        logw(WarningType.EMULATION_ERROR,
-            "Can not move to TX_FRAME or TX_ACK after preamble since radio is in wrong mode: " +
-                stateMachine);
-      }
-    } else {
-      if (rfListener != null) {
-        if (logLevel > INFO) log("transmitting byte: " + Utils.hex8(SHR[shrPos]));
-        rfListener.receivedByte(SHR[shrPos]);
-      }
-      shrPos++;
-      cpu.scheduleTimeEventMillis(shrEvent, SYMBOL_PERIOD * 2);
-    }
-  }
-
-  private void txNext() {
-    if(txfifoPos <= memory[RAM_TXFIFO]) {
-      int len = memory[RAM_TXFIFO] & 0xff;
-      if (txfifoPos == len - 1) {
-        txCrc.setCRC(0);
-        for (int i = 1; i < len - 1; i++) {
-          txCrc.addBitrev(memory[RAM_TXFIFO + i] & 0xff);
-        }
-        memory[RAM_TXFIFO + len - 1] = txCrc.getCRCHi();
-        memory[RAM_TXFIFO + len] = txCrc.getCRCLow();
-      }
-      if (txfifoPos > 0x7f) {
-        logw(WarningType.EXECUTION, "**** Warning - packet size too large - repeating packet bytes txfifoPos: " + txfifoPos);
-      }
-      if (rfListener != null) {
-        if (logLevel > INFO) log("transmitting byte: " + Utils.hex8(memory[RAM_TXFIFO + (txfifoPos & 0x7f)] & 0xFF));
-        rfListener.receivedByte((byte)(memory[RAM_TXFIFO + (txfifoPos & 0x7f)] & 0xFF));
-      }
-      txfifoPos++;
-      // Two symbol periods to send a byte...
-      cpu.scheduleTimeEventMillis(sendEvent, SYMBOL_PERIOD * 2);
-    } else {
-      if (logLevel > INFO) log("Completed Transmission.");
-      status &= ~STATUS_TX_ACTIVE;
-      setSFD(false);
-      if (overflow) {
-        /* TODO: is it going back to overflow here ?=? */
-        setState(RadioState.RX_OVERFLOW);
-      } else {
-        setState(RadioState.RX_CALIBRATE);
-      }
-      /* Back to RX ON */
-      setMode(MODE_RX_ON);
-      txfifoFlush = true;
-    }
-  }
-
-  private void ackNext() {
-    if (ackPos < ackBuf.length) {
-      if(ackPos == 0) {
-        txCrc.setCRC(0);
-        if (ackFramePending) {
-          ackBuf[1] |= FRAME_PENDING;
-        } else {
-          ackBuf[1] &= ~FRAME_PENDING;
-        }
-        // set dsn
-        ackBuf[3] = dsn;
-        int len = 4;
-        for (int i = 1; i < len; i++) {
-          txCrc.addBitrev(ackBuf[i] & 0xff);
-        }
-        ackBuf[4] = txCrc.getCRCHi();
-        ackBuf[5] = txCrc.getCRCLow();
-      }
-      if (rfListener != null) {
-        if (logLevel > INFO) log("transmitting byte: " + Utils.hex8(memory[RAM_TXFIFO + (txfifoPos & 0x7f)] & 0xFF));
-
-        rfListener.receivedByte((byte)(ackBuf[ackPos] & 0xFF));
-      }
-      ackPos++;
-      // Two symbol periods to send a byte...
-      cpu.scheduleTimeEventMillis(ackEvent, SYMBOL_PERIOD * 2);
-    } else {
-      if (logLevel > INFO) log("Completed Transmission of ACK.");
-      status &= ~STATUS_TX_ACTIVE;
-      setSFD(false);
-      setState(RadioState.RX_CALIBRATE);
-      /* Back to RX ON */
-      setMode(MODE_RX_ON);
-    }
-  }
-
-
   private void setSymbolEvent(int symbols) {
     double period = SYMBOL_PERIOD * symbols;
     cpu.scheduleTimeEventMillis(symbolEvent, period);
@@ -1151,35 +1015,11 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
    *  External APIs for simulators simulating Radio medium, etc.
    *
    *****************************************************************************/
-  @Override
-  public boolean isReadyToReceive() {
-    return getState() == RadioState.RX_SFD_SEARCH;
-  }
 
-  public void updateActiveFrequency() {
-    /* INVERTED: f = 5 * (c - 11) + 357 + 0x4000 */
-    activeFrequency = registers[REG_FSCTRL] - 357 + 2405 - 0x4000;
-    activeChannel = (registers[REG_FSCTRL] - 357 - 0x4000)/5 + 11;
-  }
-
-  @Override
-  public int getActiveFrequency() {
-    updateActiveFrequency();
-    return activeFrequency;
-  }
-
-  @Override
-  public int getActiveChannel() {
-    updateActiveFrequency();
-    return activeChannel;
-  }
-
-  @Override
   public int getOutputPowerIndicator() {
     return (registers[REG_TXCTRL] & 0x1f);
   }
 
-  @Override
   public int getOutputPowerIndicatorMax() {
     return 31;
   }
@@ -1189,19 +1029,16 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
    * @param lqi The Corr-val
    * @see "CC2420 Datasheet"
    */
-  @Override
   public void setLQI(int lqi){
     if(lqi < 0) lqi = 0;
     else if(lqi > 0x7f ) lqi = 0x7f;
     corrval = lqi;
   }
 
-  @Override
   public int getLQI() {
     return corrval;
   }
 
-  @Override
   public void setRSSI(int power) {
     final int minp = -128 + RSSI_OFFSET;
     final int maxp = 127 + RSSI_OFFSET;
@@ -1219,12 +1056,10 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     updateCCA();
   }
 
-  @Override
   public int getRSSI() {
     return rssi;
   }
 
-  @Override
   public int getOutputPower() {
     /* From CC2420 datasheet */
     int indicator = getOutputPowerIndicator();
@@ -1250,7 +1085,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     return -100;
   }
 
-  @Override
   public int getOutputPowerMax() {
     return 0;
   }
@@ -1546,7 +1380,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
    * Generate a new packet from the TX FIFIO
    */
   private Packet packetFromTxFifo() {
-    int channel = memory[RAM_TXFIFO] & 0xff;
+    byte channel = (byte) (memory[RAM_TXFIFO] & 0xff);
     int len = memory[RAM_TXFIFO+1] & 0xff;
     final int maxlen = TXFIFO_SZ - 2;
     if (len > maxlen) {
@@ -1633,7 +1467,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
 
   @Override
   public String info() {
-    updateActiveFrequency();
     return " VREG_ON: " + on + "  Chip Select: " + chipSelect +
         "  OSC Stable: " + ((status & STATUS_XOSC16M_STABLE) > 0) +
         "\n RSSI Valid: " + ((status & STATUS_RSSI_VALID) > 0) + "  CCA: " + cca +
