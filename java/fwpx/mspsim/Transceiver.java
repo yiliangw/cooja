@@ -1156,6 +1156,12 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     sfdPin = pin;
   }
 
+  public boolean isReceiving() {
+    for (var buf: channels.values()) {
+      if (buf.isReceiving()) return true;
+    }
+    return false;
+  }
 
   // -------------------------------------------------------------------
   // Methods for accessing and writing to registers, etc. from outside
@@ -1487,4 +1493,4 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   @Override
   public void stateChanged(int state) {
   }
-} // CC2420
+} /* Transceiver */

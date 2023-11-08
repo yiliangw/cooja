@@ -3,10 +3,13 @@ package fwpx.cooja;
 import fwpx.mspsim.*;
 import org.contikios.cooja.Mote;
 import org.contikios.cooja.interfaces.CustomDataRadio;
+import org.contikios.cooja.interfaces.Position;
 import org.contikios.cooja.mspmote.MspMote;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import se.sics.mspsim.chip.CC2420;
 
+import javax.swing.*;
 import java.util.*;
 
 public final class Radio extends org.contikios.cooja.interfaces.Radio implements CustomDataRadio {
@@ -143,6 +146,81 @@ public final class Radio extends org.contikios.cooja.interfaces.Radio implements
   @Override
   public void interfereAnyReception() {
     /* TODO: Clear all the reception states. This will be called  */
+  }
+
+  @Override
+  public RadioEvent getLastEvent() {
+    return lastEvent;
+  }
+
+  @Override
+  public void setReceivedPacket(org.contikios.cooja.RadioPacket packet) {
+    logger.warn("setReceivedPacket should not be called");
+  }
+
+  @Override
+  public boolean isReceiving() {
+    return trx.isReceiving();
+  }
+
+  @Override
+  public boolean isInterfered() {
+    return false;
+  }
+
+  @Override
+  public boolean isRadioOn() {
+    final var mode = trx.getMode();
+    if (mode == Transceiver.MODE_POWER_OFF ||
+        mode == Transceiver.MODE_TXRX_OFF) {
+      return false;
+    }
+    return true;
+  }
+
+  @Override
+  public double getCurrentOutputPower() {
+    return trx.getOutputPower();
+  }
+
+  @Override
+  public int getCurrentOutputPowerIndicator() {
+    return trx.getOutputPowerIndicator();
+  }
+
+  @Override
+  public int getOutputPowerIndicatorMax() {
+    return trx.getOutputPowerIndicatorMax();
+  }
+
+  @Override
+  public int getLQI() throws UnsupportedOperationException {
+    return trx.getLQI();
+  }
+
+  @Override
+  public void setLQI(int lqi) {
+    trx.setLQI(lqi);
+  }
+
+  @Override
+  public double getCurrentSignalStrength() {
+    return trx.getRSSI();
+  }
+
+  @Override
+  public void setCurrentSignalStrength(double signalStrength) {
+    logger.warn("setCurrentSignalStrength should not be called");
+  }
+
+  @Override
+  public Position getPosition() {
+    return mote.getInterfaces().getPosition();
+  }
+
+  @Override
+  public Mote getMote() {
+    return mote;
   }
 
   /*****************************************************************************
