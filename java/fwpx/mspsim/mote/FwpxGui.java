@@ -39,7 +39,7 @@
  *           $Revision$
  */
 
-package fwpx.mspsim.sky;
+package fwpx.mspsim.mote;
 
 import se.sics.mspsim.chip.ExternalFlash;
 import se.sics.mspsim.core.StateChangeListener;
@@ -49,7 +49,7 @@ import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 
-public class SkyGui extends AbstractNodeGUI {
+public class FwpxGui extends AbstractNodeGUI {
   public static final int GREEN_Y = 40;
   public static final int BLUE_Y = 46;
   public static final int RED_Y = 34;
@@ -68,7 +68,7 @@ public class SkyGui extends AbstractNodeGUI {
   private final MoteIVNode<? extends ExternalFlash> node;
   private final StateChangeListener ledsListener = (source, oldState, newState) -> repaint(LEDS_BOUNDS);
 
-  public SkyGui(MoteIVNode<? extends ExternalFlash> node) {
+  public FwpxGui(MoteIVNode<? extends ExternalFlash> node) {
     super("SkyGui", "images/sky.jpg");
     this.node = node;
   }
@@ -88,7 +88,7 @@ public class SkyGui extends AbstractNodeGUI {
           if (x > 122 && x < 135) {
             if (y > 41 && y < 55) {
               buttonDown = true;
-              SkyGui.this.node.getButton().setPressed(true);
+              FwpxGui.this.node.getButton().setPressed(true);
             } else if (y > 72 && y < 85) {
               resetDown = true;
             }
@@ -99,14 +99,14 @@ public class SkyGui extends AbstractNodeGUI {
         public void mouseReleased(MouseEvent e) {
           if (buttonDown) {
             buttonDown = false;
-            SkyGui.this.node.getButton().setPressed(false);
+            FwpxGui.this.node.getButton().setPressed(false);
 
           } else if (resetDown) {
             int x = e.getX();
             int y = e.getY();
             resetDown = false;
             if (x > 122 && x < 135 && y > 72 && y < 85) {
-              SkyGui.this.node.getCPU().reset();
+              FwpxGui.this.node.getCPU().reset();
             }
           }
         }

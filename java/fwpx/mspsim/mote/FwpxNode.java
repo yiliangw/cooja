@@ -39,7 +39,7 @@
  *           $Revision$
  */
 
-package fwpx.mspsim.sky;
+package fwpx.mspsim.mote;
 
 import se.sics.mspsim.chip.M25P80;
 import se.sics.mspsim.core.IOPort;
@@ -49,13 +49,13 @@ import se.sics.mspsim.core.USARTSource;
 /**
  * Emulation of Sky Mote
  */
-public class SkyNode extends MoteIVNode<M25P80> {
+public class FwpxNode extends MoteIVNode<M25P80> {
   /**
-   * Creates a new <code>SkyNode</code> instance.
+   * Creates a new <code>FwpxNode</code> instance.
    *
    */
-  public SkyNode(MSP430 cpu, M25P80 flash) {
-    super("Tmote Sky", cpu, flash);
+  public FwpxNode(MSP430 cpu, M25P80 flash) {
+    super("Fwpx Mote", cpu, flash);
   }
 
   // USART Listener

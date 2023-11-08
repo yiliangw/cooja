@@ -1,4 +1,4 @@
-package fwpx.mspsim.sky;
+package fwpx.mspsim.mote;
 
 import fwpx.mspsim.Transceiver;
 import se.sics.mspsim.chip.DS2411;

@@ -1,4 +1,4 @@
-package fwpx.mspsim.sky;
+package fwpx.mspsim.mote;
 import se.sics.mspsim.chip.Button;
 import se.sics.mspsim.chip.ExternalFlash;
 import se.sics.mspsim.chip.Leds;
@@ -6,7 +6,7 @@ import se.sics.mspsim.chip.SHT11;
 import se.sics.mspsim.core.IOPort;
 import se.sics.mspsim.core.MSP430;
 
-public abstract class MoteIVNode<FlashType extends ExternalFlash> extends CC2420Node<FlashType> {
+public abstract class MoteIVNode<FlashType extends ExternalFlash> extends TransceiverNode<FlashType> {
 
   public static final int MODE_LEDS_OFF = 0;
   public static final int MODE_LEDS_1 = 1;
@@ -35,7 +35,7 @@ public abstract class MoteIVNode<FlashType extends ExternalFlash> extends CC2420
   private final Button button;
   public final SHT11 sht11;
 
-  public SkyGui gui;
+  public FwpxGui gui;
 
   public MoteIVNode(String id, MSP430 cpu, FlashType flash) {
     super(id, cpu, flash);
@@ -63,7 +63,7 @@ public abstract class MoteIVNode<FlashType extends ExternalFlash> extends CC2420
   public void setupGUI() {
     super.setupGUI();
     if (gui == null) {
-      gui = new SkyGui(this);
+      gui = new FwpxGui(this);
       registry.registerComponent("nodegui", gui);
     }
   }
