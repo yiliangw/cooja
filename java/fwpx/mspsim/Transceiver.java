@@ -32,16 +32,13 @@
  */
 package fwpx.mspsim;
 
-import se.sics.mspsim.core.Chip;
+import se.sics.mspsim.core.*;
 import se.sics.mspsim.core.EmulationLogger.WarningType;
-import se.sics.mspsim.core.IOPort;
-import se.sics.mspsim.core.MSP430Core;
-import se.sics.mspsim.core.TimeEvent;
-import se.sics.mspsim.core.USARTListener;
-import se.sics.mspsim.core.USARTSource;
 import se.sics.mspsim.util.ArrayFIFO;
 import se.sics.mspsim.util.CCITT_CRC;
 import se.sics.mspsim.util.Utils;
+
+import java.util.*;
 
 public class Transceiver extends Chip implements USARTListener, PacketListener, PacketSource {
 
@@ -253,7 +250,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   private int shrPos;
   private int txfifoPos;
   private boolean txfifoFlush;	// TXFIFO is automatically flushed on next write
-  private int rxfifoReadLeft; // number of bytes left to read from current packet
   private int rxlen;
   private int rxread;
   private int zeroSymbols;
@@ -414,7 +410,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
 
       if (packetListener != null) {
         /* Notify the delivery end. */
-        packetListener.packetDeliveryEnd(ongoingTxPacket.id(), ongoingTxPacket);
+        packetListener.packetDeliveryFinished(ongoingTxPacket.id(), ongoingTxPacket);
       }
       ongoingTxPacket = null;
 
@@ -461,7 +457,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     return stateMachine;
   }
 
-  public CC2420(MSP430Core cpu) {
+  public Transceiver(MSP430Core cpu) {
     super("CC2420", "Radio", cpu);
     rxFIFO = new ArrayFIFO("RXFIFO", memory, RAM_RXFIFO, 128);
 
@@ -542,7 +538,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         if (logLevel > INFO) log("TX starts: " + ongoingTxPacket.id());
         if (packetListener != null) {
           /* Notify the delivery start */
-          packetListener.packetDeliveryStart(ongoingTxPacket.id());
+          packetListener.packetDeliveryStarted(ongoingTxPacket.id());
         }
         final double latency = 5 * 2 * SYMBOL_PERIOD;
         cpu.scheduleTimeEventMillis(txPreambleDoneEvent, latency);
@@ -621,162 +617,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     setSFD(false);
     setFIFO(!rxFIFO.isEmpty());
     frameRejected = true;
-  }
-
-  /* variables for the address recognition */
-  private int destinationAddressMode;
-  private boolean decodeAddress;
-  /* Receive a byte from the radio medium
-   * @see se.sics.mspsim.chip.RFListener#receivedByte(byte)
-   */
-  @Override
-  public void receivedByte(byte data) {
-    // Received a byte from the "air"
-
-    if (logLevel > INFO)
-      log("RF Byte received: " + Utils.hex8(data) + " state: " + stateMachine + " noZeroes: " + zeroSymbols +
-          ((stateMachine == RadioState.RX_SFD_SEARCH || stateMachine == RadioState.RX_FRAME) ? "" : " *** Ignored"));
-
-    if(stateMachine == RadioState.RX_SFD_SEARCH) {
-      // Look for the preamble (4 zero bytes) followed by the SFD byte 0x7A
-      if(data == 0) {
-        // Count zero bytes
-        zeroSymbols++;
-      } else if(zeroSymbols >= 4 && data == 0x7A) {
-        // If the received byte is !zero, we have counted 4 zero bytes prior to this one,
-        // and the current received byte == 0x7A (SFD), we're in sync.
-        // In RX mode, SFD goes high when the SFD is received
-        setSFD(true);
-        if (logLevel > INFO) log("RX: Preamble/SFD Synchronized.");
-        setState(RadioState.RX_FRAME);
-      } else {
-        /* if not four zeros and 0x7A then no zeroes... */
-        zeroSymbols = 0;
-      }
-
-    } else if(stateMachine == RadioState.RX_FRAME) {
-      if (overflow) {
-        /* if the CC2420 RX FIFO is in overflow - it needs a flush before receiving again */
-      } else if(rxFIFO.isFull()) {
-        setRxOverflow();
-      } else {
-        if (!frameRejected) {
-          rxFIFO.write(data);
-          if (rxread == 0) {
-            rxCrc.setCRC(0);
-            rxlen = data & 0xff;
-            //System.out.println("Starting to get packet at: " + rxfifoWritePos + " len = " + rxlen);
-            decodeAddress = addressDecode;
-            if (logLevel > INFO) log("RX: Start frame length " + rxlen);
-            // FIFO pin goes high after length byte is written to RXFIFO
-            setFIFO(true);
-          } else if (rxread < rxlen - 1) {
-            /* As long as we are not in the length or FCF (CRC) we count CRC */
-            rxCrc.addBitrev(data & 0xff);
-            if (rxread == 1) {
-              fcf0 = data & 0xff;
-              frameType = fcf0 & FRAME_TYPE;
-            } else if (rxread == 2) {
-              fcf1 = data & 0xff;
-              if (frameType == TYPE_DATA_FRAME || frameType == TYPE_CMD_FRAME) {
-                ackRequest = (fcf0 & ACK_REQUEST) > 0;
-                destinationAddressMode = (fcf1 >> 2) & 3;
-                /* check this !!! */
-                if (addressDecode && destinationAddressMode != LONG_ADDRESS &&
-                    destinationAddressMode != SHORT_ADDRESS) {
-                  rejectFrame();
-                }
-              } else if (frameType == TYPE_BEACON_FRAME ||
-                  frameType == TYPE_ACK_FRAME){
-                decodeAddress = false;
-                ackRequest = false;
-              } else if (addressDecode) {
-                /* illegal frame when decoding address... */
-                rejectFrame();
-              }
-            } else if (rxread == 3) {
-              // save data sequence number
-              dsn = data & 0xff;
-            } else if (decodeAddress) {
-              boolean flushPacket = false;
-              /* here we decode the address !!! */
-              if (destinationAddressMode == LONG_ADDRESS && rxread == 8 + 5) {
-                /* here we need to check that this address is correct compared to the stored address */
-                flushPacket = !rxFIFO.tailEquals(memory, RAM_IEEEADDR, 8);
-                flushPacket |= !rxFIFO.tailEquals(memory, RAM_PANID, 2, 8)
-                    && !rxFIFO.tailEquals(BC_ADDRESS, 0, 2, 8);
-                decodeAddress = false;
-              } else if (destinationAddressMode == SHORT_ADDRESS && rxread == 2 + 5){
-                /* should check short address */
-                flushPacket = !rxFIFO.tailEquals(BC_ADDRESS, 0, 2)
-                    && !rxFIFO.tailEquals(memory, RAM_SHORTADDR, 2);
-                flushPacket |= !rxFIFO.tailEquals(memory, RAM_PANID, 2, 2)
-                    && !rxFIFO.tailEquals(BC_ADDRESS, 0, 2, 2);
-                decodeAddress = false;
-              }
-              if (flushPacket) {
-                rejectFrame();
-              }
-            }
-          }
-
-          /* In RX mode, FIFOP goes high when the size of the first enqueued packet exceeds
-           * the programmable threshold and address recognition isn't ongoing */
-          if (!currentFIFOP
-              && rxFIFO.length() <= rxlen + 1
-              && !decodeAddress && !frameRejected
-              && rxFIFO.length() > fifopThr) {
-            setFIFOP(true);
-            if (logLevel > INFO) log("RX: FIFOP Threshold reached - setting FIFOP");
-          }
-        }
-
-        if (rxread++ == rxlen) {
-          if (frameRejected) {
-            if (logLevel > INFO) log("Frame rejected - setting SFD to false and RXWAIT\n");
-            setSFD(false);
-            setState(RadioState.RX_WAIT);
-            return;
-          }
-          // In RX mode, FIFOP goes high, if threshold is higher than frame length....
-
-          // Here we check the CRC of the packet!
-          //System.out.println("Reading from " + ((rxfifoWritePos + 128 - 2) & 127));
-          int crc = rxFIFO.get(-2) << 8;
-          crc += rxFIFO.get(-1); //memory[RAM_RXFIFO + ((rxfifoWritePos + 128 - 1) & 127)];
-
-          crcOk = crc == rxCrc.getCRCBitrev();
-          if (logLevel > INFO && !crcOk) {
-            log("CRC not OK: recv:" + Utils.hex16(crc) + " calc: " + Utils.hex16(rxCrc.getCRCBitrev()));
-          }
-          // Should take a RSSI value as input or use a set-RSSI value...
-          rxFIFO.set(-2, registers[REG_RSSI] & 0xff);
-          rxFIFO.set(-1, (corrval & 0x7F) | (crcOk ? 0x80 : 0));
-          //          memory[RAM_RXFIFO + ((rxfifoWritePos + 128 - 2) & 127)] = ;
-          //          // Set CRC ok and add a correlation - TODO: fix better correlation value!!!
-          //          memory[RAM_RXFIFO + ((rxfifoWritePos + 128 - 1) & 127)] = 37 |
-          //              (crcOk ? 0x80 : 0);
-
-          /* set FIFOP only if this is the first received packet - e.g. if rxfifoLen is at most rxlen + 1
-           * TODO: check what happens when rxfifoLen < rxlen - e.g we have been reading before FIFOP */
-          if (rxFIFO.length() <= rxlen + 1) {
-            setFIFOP(true);
-          } else {
-            if (logLevel > INFO) log("Did not set FIFOP rxfifoLen: " + rxFIFO.length() + " rxlen: " + rxlen);
-          }
-          setSFD(false);
-          if (logLevel > INFO) log("RX: Complete: packetStart: " + rxFIFO.stateToString());
-
-          /* if either manual ack request (shouldAck) or autoack + ACK_REQ on package do ack! */
-          /* Autoack-mode + good CRC => autoack */
-          if (((autoAck && ackRequest) || shouldAck) && crcOk) {
-            setState(RadioState.TX_ACK_CALIBRATE);
-          } else {
-            setState(RadioState.RX_WAIT);
-          }
-        }
-      }
-    }
   }
 
   private void setReg(int address, int data) {
@@ -911,36 +751,15 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
           if (logLevel > INFO) log("RXFIFO READ: " + rxFIFO.stateToString());
           source.byteReceived(fifoData);
 
-          /* first check and clear FIFOP - since we now have read a byte! */
-          if (currentFIFOP && !overflow) {
-            /* FIFOP is lowered when rxFIFO is lower than or equal to fifopThr */
-            if(rxFIFO.length() <= fifopThr) {
-              if (logLevel > INFO) log("*** FIFOP cleared at: " + rxFIFO.stateToString());
-              setFIFOP(false);
-            }
+          /* Clear FIFOP after the first byte is read. No threshold anymore. */
+          if (currentFIFOP) {
+            setFIFOP(false);
+            if (logLevel > INFO) log("*** FIFOP cleared at: " + rxFIFO.stateToString());
           }
 
-          /* initiate read of another packet - update some variables to keep track of packet reading... */
-          if (rxfifoReadLeft == 0) {
-            rxfifoReadLeft = fifoData;
-            if (logLevel > INFO) log("Init read of packet - len: " + rxfifoReadLeft +
-                " fifo: " + rxFIFO.stateToString());
-          } else if (--rxfifoReadLeft == 0) {
-            /* check if we have another packet in buffer */
-            if (!rxFIFO.isEmpty()) {
-              /* check if the packet is complete or longer than fifopThr */
-              if (rxFIFO.length() > rxFIFO.peek(0) ||
-                  (rxFIFO.length() > fifopThr && !decodeAddress && !frameRejected)) {
-                if (logLevel > INFO) log("More in FIFO - FIFOP = 1! plen: " + rxFIFO.stateToString());
-                if (!overflow) setFIFOP(true);
-              }
-            }
-          }
-          // Set the FIFO pin low if there are no more bytes available in the RXFIFO.
-          if (rxFIFO.isEmpty()) {
-            if (logLevel > INFO) log("Setting FIFO to low (buffer empty)");
-            setFIFO(false);
-          }
+          /* Try to initiate read of another packet. tryNewDelivery can always be called safely
+           * because we will check the status */
+          tryNewDelivery();
         }
         return; /* avoid returning the status byte */
         case WRITE_TXFIFO:
@@ -1520,8 +1339,208 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   /*****************************************************************************
    * The Packet Layer
    *****************************************************************************/
+  private static class ChannelBuffer {
+    private final List<PacketId> startedReceptions = new ArrayList<>();
+    private final Set<PacketId> ongoingReceptions = new HashSet<>();
+    private final Map<PacketId, Packet> finishedReceptions = new HashMap<>();
+
+    private final Transceiver trx;
+    private final int channel;
+    private final Random random;
+
+    private List<Packet> decodedPackets;
+    private byte detectedPacketNum;
+
+    ChannelBuffer(Transceiver trx, int channel, int seed) {
+      this.trx = trx;
+      this.channel = channel;
+      this.random = new Random(seed);
+      clear();
+    }
+
+    void clear() {
+      startedReceptions.clear();
+      ongoingReceptions.clear();
+      finishedReceptions.clear();
+      decodedPackets = null;
+      detectedPacketNum = 0;
+    }
+
+    boolean isReceiving() {
+      return !ongoingReceptions.isEmpty();
+    }
+
+    void receptionStarted(PacketId id) {
+      startedReceptions.add(id);
+      ongoingReceptions.add(id);
+    }
+
+    void receptionFinished(PacketId id, Packet packet) {
+      if (ongoingReceptions.contains(id)) {
+        ongoingReceptions.remove(id);
+        finishedReceptions.put(id, packet);
+      }
+    }
+
+    boolean decode() {
+      assert !isReceiving();
+
+      final double p = random.nextDouble();
+      boolean success = true;
+
+      decodedPackets = null;
+      /* Fail to detect the packet number. */
+      if (p > getDetectionSuccessProbability()) {
+        detectedPacketNum = (byte)(random.nextInt(startedReceptions.size()) & 0xff);
+        success = false;
+      }
+
+      /* Correctly detect the collided packet number, but fails to decode. */
+      if (success)
+        detectedPacketNum = (byte)startedReceptions.size();
+      if (p > getDecodingSuccessProbability())
+        success = false;
+      if (!success) {
+        if (trx.logLevel > INFO)
+          trx.log(String.format("Detected {}/{} packets", detectedPacketNum, startedReceptions.size()));
+        return false;
+      }
+
+      /* Successfully decode the packets. */
+      if (trx.logLevel > INFO) trx.log(String.format("Decoded {} packets", detectedPacketNum));
+      List<Packet> packets = new ArrayList<>();
+      for (PacketId id : startedReceptions) {
+        Packet pkt = finishedReceptions.get(id);
+        packets.add(pkt);
+      }
+      decodedPackets = packets;
+      return true;
+    }
+
+    List<Packet> getDecodedPacket() {
+      return decodedPackets;
+    }
+
+    byte getDetectedPacketNum() {
+      return detectedPacketNum;
+    }
+
+    private double getDecodingSuccessProbability() {
+      switch(startedReceptions.size()) {
+        case 1:
+          return 0.99;
+        case 2:
+          return 0.80;
+        default:
+          return 0.0;
+      }
+    }
+
+    private double getDetectionSuccessProbability() {
+      switch(startedReceptions.size()) {
+        case 1:
+          return 1.0;
+        case 2:
+        case 3:
+        case 4:
+          return 1.0 - 0.03 * startedReceptions.size();
+        default:
+          return 0.0;
+      }
+    }
+  }
+
+  private static abstract class Deliverable {
+    static final char PACKET = 0;
+    static final char PACKET_NUM = 1;
+    abstract byte[] toBinary();
+  }
+
+  private static class DecodedPacket extends Deliverable {
+    final byte channel;
+    final byte[] data;
+    private byte[] bin;
+    DecodedPacket(Packet pkt) {
+      this.channel = pkt.id().channel();
+      this.data = pkt.data();
+      this.bin = null;
+    }
+    @Override
+    byte[] toBinary() {
+      if (bin == null) {
+        bin = new byte[data.length + 3];
+        bin[0] = PACKET;
+        bin[1] = channel;
+        bin[2] = (byte)data.length;
+        System.arraycopy(data, 0, bin, 3, data.length);
+      }
+      return bin;
+    }
+  }
+
+  private static class DetectedPacketNum extends Deliverable {
+    final byte channel;
+    final byte num;
+    private byte[] bin;
+    DetectedPacketNum(byte channel, byte num) {
+      this.channel = channel;
+      this.num = num;
+      this.bin = null;
+    }
+    @Override
+    byte[] toBinary() {
+      if (bin == null) {
+        bin = new byte[3];
+        bin[0] = PACKET_NUM;
+        bin[1] = channel;
+        bin[3] = num;
+      }
+      return bin;
+    }
+  }
+
   private long txCounter = 0;
   private Packet ongoingTxPacket = null;
+  private final Map<Byte, ChannelBuffer> channels = new HashMap<>();
+
+  private final Queue<Deliverable> deliverableQ = new LinkedList<>();
+
+  private boolean tryNewDelivery() {
+    /* We only do the delivery when we can issue an interrupt at once. The
+     * behaviour will be the same seeing from outside, but the implementation logic
+     * can be more concise for us. Also, FIFOP threshold is not needed now.
+     *
+     * With current design, actually we will not run into this loop more than once.
+     */
+    boolean delivered = false;
+    while (rxFIFO.isEmpty() && !deliverableQ.isEmpty()) {
+      final var d = deliverableQ.peek();
+      final var binLen = d.toBinary().length;
+      if (binLen > rxFIFO.size()) {
+        logw(WarningType.EXECUTION, "Transceiver: Warning - deliverable larger than rxFIFO size. Aborting.");
+        deliverableQ.remove();
+        continue;
+      }
+
+      /* Let's put the deliverable into the rxFIFO. */
+      for (byte b: d.toBinary())
+        rxFIFO.write(b);
+
+      /* Notify the firmware with FIFOP interrupt. */
+      assert currentFIFOP == false;
+      setFIFOP(true);
+
+      /* Remove the deliverable from the pending queue. */
+      deliverableQ.remove();
+      delivered = true;
+    }
+    return delivered;
+  }
+
+  private void pendDeliverable(Deliverable deliverable) {
+    deliverableQ.add(deliverable);
+    tryNewDelivery();
+  }
 
   /**
    * Generate a new packet from the TX FIFIO
@@ -1543,20 +1562,42 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   }
 
   /*****************************************************************************
-   * PakcetListener APIs
+   * PacketListener APIs
    *****************************************************************************/
   @Override
-  public void packetDeliveryStart(PacketId id) {
-    /* TODO */
+  public void packetDeliveryStarted(PacketId id) {
+    final byte channel = id.channel();
+    ChannelBuffer cbuf = channels.getOrDefault(channel,
+        new ChannelBuffer(Transceiver.this, channel, this.hashCode() + channel));
+    cbuf.receptionStarted(id);
+    channels.put(channel, cbuf);
+    /* TODO: If SFD interrupt is needed for the firmware, we may need to set it
+     * here. But still not quite sure how to combine this with packet number detection
+     * success probability when there is collision.
+     */
   }
 
   @Override
-  public void packetDeliveryEnd(PacketId id, Packet packet) {
-    /* TODO */
+  public void packetDeliveryFinished(PacketId id, Packet packet) {
+    final byte channel = id.channel();
+    ChannelBuffer cbuf = channels.get(channel);
+    cbuf.receptionFinished(id, packet);
+
+    if (!cbuf.isReceiving()) {
+      var decoded = cbuf.decode();
+      int num = cbuf.getDetectedPacketNum();
+      if (decoded) {
+        for (var pkt: cbuf.getDecodedPacket())
+          pendDeliverable(new DecodedPacket(pkt));
+      } else {
+        pendDeliverable(new DetectedPacketNum(channel, cbuf.getDetectedPacketNum()));
+      }
+      cbuf.clear();
+    }
   }
 
   /*****************************************************************************
-   * PakcetSource APIs
+   * PacketSource APIs
    *****************************************************************************/
   private PacketListener packetListener = null;
 

@@ -99,6 +99,8 @@ public class ArrayFIFO {
         return len;
     }
 
+    public int size() { return size; }
+
     public void reset() {
         writePos = 0;
         readPos = 0;

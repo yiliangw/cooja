@@ -1,3 +1,3 @@
 package fwpx.mspsim;
 
-public record PacketId(Transceiver trx, int channel, long seqNum) { }
+public record PacketId(Transceiver trx, byte channel, long seqNum) {}
