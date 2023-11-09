@@ -32,6 +32,7 @@
  */
 package fwpx.mspsim;
 
+import org.contikios.cooja.ClassDescription;
 import se.sics.mspsim.core.*;
 import se.sics.mspsim.core.EmulationLogger.WarningType;
 import se.sics.mspsim.util.ArrayFIFO;

@@ -1,5 +1,6 @@
 package fwpx.cooja;
 
+import org.contikios.cooja.ClassDescription;
 import org.contikios.cooja.Simulation;
 import org.contikios.cooja.interfaces.Position;
 import org.contikios.cooja.radiomediums.DGRMDestinationRadio;
@@ -13,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.function.BiConsumer;
 
+@ClassDescription("FWPX Radio Medium")
 public class RadioMedium implements org.contikios.cooja.RadioMedium {
   private static final Logger logger = LoggerFactory.getLogger(RadioMedium.class);
 

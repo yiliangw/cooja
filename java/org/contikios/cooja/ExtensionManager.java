@@ -94,6 +94,7 @@ public class ExtensionManager {
     registerBuiltinPlugin(MspStackWatcher.class);
     registerBuiltinPlugin(MspCycleWatcher.class);
 
+    registerBuiltinRadioMedium(fwpx.cooja.RadioMedium.class);
     registerBuiltinRadioMedium(UDGM.class);
     registerBuiltinRadioMedium(UDGMConstantLoss.class);
     registerBuiltinRadioMedium(DirectedGraphMedium.class);

@@ -410,6 +410,7 @@ public class Cooja {
   private void registerClasses() {
     // Register mote types.
     moteTypeClasses = new ArrayList<>();
+    registerMoteType(fwpx.cooja.MoteType.class);
     registerMoteType(ImportAppMoteType.class);
     registerMoteType(DisturberMoteType.class);
     registerMoteType(ContikiMoteType.class);

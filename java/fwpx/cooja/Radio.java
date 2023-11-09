@@ -1,17 +1,17 @@
 package fwpx.cooja;
 
 import fwpx.mspsim.*;
+import org.contikios.cooja.ClassDescription;
 import org.contikios.cooja.Mote;
 import org.contikios.cooja.interfaces.CustomDataRadio;
 import org.contikios.cooja.interfaces.Position;
 import org.contikios.cooja.mspmote.MspMote;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import se.sics.mspsim.chip.CC2420;
 
-import javax.swing.*;
 import java.util.*;
 
+@ClassDescription("FWPX Radio")
 public final class Radio extends org.contikios.cooja.interfaces.Radio implements CustomDataRadio {
   private static final Logger logger = LoggerFactory.getLogger(Radio.class);
 
@@ -56,7 +56,7 @@ public final class Radio extends org.contikios.cooja.interfaces.Radio implements
     this.random = m.getSimulation().getRandomGenerator();
     this.trx = this.mote.getCPU().getChip(Transceiver.class);
     if (this.trx == null) {
-      throw new IllegalStateException("Mote is not equipped with an IEEE 802.15.4 radio");
+      throw new IllegalStateException("Mote is not equipped with an FWPX transceiver");
     }
 
     trx.addPacketListener(new PacketListener() {
