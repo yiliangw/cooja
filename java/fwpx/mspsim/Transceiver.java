@@ -438,7 +438,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   }
 
   public Transceiver(MSP430Core cpu) {
-    super("CC2420", "Radio", cpu);
+    super("FWPX Transceiver", "Radio", cpu);
     rxFIFO = new ArrayFIFO("RXFIFO", memory, RAM_RXFIFO, 128);
 
     registers[REG_SNOP] = 0;
@@ -934,6 +934,8 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         (stateMachine == RadioState.RX_WAIT)) {
       setState(RadioState.RX_SFD_SEARCH);
     }
+
+    tryNewDelivery();
   }
 
   // TODO: update any pins here?
@@ -1334,7 +1336,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         bin = new byte[3];
         bin[0] = PACKET_NUM;
         bin[1] = channel;
-        bin[3] = num;
+        bin[2] = num;
       }
       return bin;
     }
