@@ -32,7 +32,6 @@
  */
 package fwpx.mspsim;
 
-import org.contikios.cooja.ClassDescription;
 import se.sics.mspsim.core.*;
 import se.sics.mspsim.core.EmulationLogger.WarningType;
 import se.sics.mspsim.util.ArrayFIFO;
@@ -192,14 +191,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     RX_SFD_SEARCH(3),
     RX_WAIT(14),
     RX_FRAME(16),
-    RX_OVERFLOW(17),
-    TX_CALIBRATE(32),
-    TX_PREAMBLE(34),
-    TX_FRAME(37),
-    TX_ACK_CALIBRATE(48),
-    TX_ACK_PREAMBLE(49),
-    TX_ACK(52),
-    TX_UNDERFLOW(56);
+    RX_OVERFLOW(17);
 
     private final int state;
     RadioState(int stateNo) {
@@ -261,8 +253,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
 
   private int rssi = -100;
   private static final int RSSI_OFFSET = -45; /* cc2420 datasheet */
-  /* current CCA value */
-  private boolean cca;
 
   /* This is the magical LQI */
   private int corrval = 37;
@@ -321,7 +311,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
       if (logLevel > INFO) log("Oscillator Stable Event.");
       setState(RadioState.IDLE);
       if( (registers[REG_IOCFG1] & CCAMUX) == CCAMUX_XOSC16M_STABLE) {
-        updateCCA();
       } else {
         if(logLevel > INFO) log("CCAMUX != CCA_XOSC16M_STABLE! Not raising CCA");
       }
@@ -335,7 +324,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
           cpu.cycles + " " + getTime());
       on = true;
       setState(RadioState.POWER_DOWN);
-      updateCCA();
     }
   };
 
@@ -350,61 +338,8 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         /* this will be called 8 symbols after first SFD_SEARCH */
         case RX_SFD_SEARCH:
           status |= STATUS_RSSI_VALID;
-          updateCCA();
-          break;
-
-        case TX_CALIBRATE:
-          setState(RadioState.TX_PREAMBLE);
-          break;
-
-        case TX_ACK_CALIBRATE:
-          setState(RadioState.TX_ACK_PREAMBLE);
           break;
       }
-    }
-  };
-
-  private final TimeEvent txCalibrationDoneEvent = new TimeEvent(0, "TX Calibration Done") {
-    @Override
-    public void execute(long t) {
-      assert stateMachine == RadioState.TX_CALIBRATE;
-      setState(RadioState.TX_PREAMBLE);
-    }
-  };
-
-  private final TimeEvent txPreambleDoneEvent = new TimeEvent(0, "TX Preamble Done") {
-    @Override
-    public void execute(long t) {
-      assert stateMachine == RadioState.TX_PREAMBLE;
-      setSFD(true);
-      setState(RadioState.TX_FRAME);
-    }
-  };
-
-  private final TimeEvent txFrameDoneEvent = new TimeEvent(0, "TX Frame Done") {
-    @Override
-    public void execute(long t) {
-      assert stateMachine == RadioState.RX_FRAME;
-      assert ongoingTxPacket != null;
-      if (logLevel > INFO) log("Completed Transmission.");
-
-      if (packetListener != null) {
-        /* Notify the delivery end. */
-        packetListener.packetDeliveryFinished(ongoingTxPacket.id(), ongoingTxPacket);
-      }
-      ongoingTxPacket = null;
-
-      status &= ~STATUS_TX_ACTIVE;
-      setSFD(false);
-      if (overflow) {
-        /* TODO: is it going back to overflow here ?=? */
-        setState(RadioState.RX_OVERFLOW);
-      } else {
-        setState(RadioState.RX_CALIBRATE);
-      }
-      /* Back to RX ON */
-      setMode(MODE_RX_ON);
-      txfifoFlush = true;
     }
   };
 
@@ -412,8 +347,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   private boolean currentSFD;
   private boolean currentFIFO;
   private boolean currentFIFOP;
-  private boolean overflow;
-  private boolean frameRejected;
 
   public interface StateListener {
     void newState(RadioState state);
@@ -447,7 +380,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     setMode(MODE_POWER_OFF);
     currentFIFOP = false;
     rxFIFO.reset();
-    overflow = false;
     reset();
   }
 
@@ -472,7 +404,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         crcOk = false;
         reset();
         setMode(MODE_POWER_OFF);
-        updateCCA();
         break;
 
       case POWER_DOWN:
@@ -481,7 +412,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         crcOk = false;
         reset();
         setMode(MODE_POWER_OFF);
-        updateCCA();
         break;
 
       case RX_CALIBRATE:
@@ -496,46 +426,8 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
           setSymbolEvent(8);
         }
 //      status |= STATUS_RSSI_VALID;
-        updateCCA();
         setMode(MODE_RX_ON);
         break;
-
-      case TX_CALIBRATE: {
-
-        /* 12 symbols calibration, and one byte's wait since we deliver immediately
-         * to listener when after calibration?
-         */
-        ongoingTxPacket = packetFromTxFifo();
-        setMode(MODE_TXRX_ON);
-        final double latency = (12 + 2 /* Not quite sure */) * SYMBOL_PERIOD;
-        cpu.scheduleTimeEventMillis(txCalibrationDoneEvent, latency);
-      }   
-      break;
-
-      case TX_PREAMBLE: {
-        /* The TX starts here */
-        assert ongoingTxPacket != null;
-        if (logLevel > INFO) log("TX starts: " + ongoingTxPacket.id());
-        if (packetListener != null) {
-          /* Notify the delivery start */
-          packetListener.packetDeliveryStarted(ongoingTxPacket.id());
-        }
-        final double latency = 5 * 2 * SYMBOL_PERIOD;
-        cpu.scheduleTimeEventMillis(txPreambleDoneEvent, latency);
-      }
-      break;
-
-      case TX_FRAME: {
-        assert ongoingTxPacket != null;
-        txfifoPos = 0;
-        // Reset CRC ok flag to disable software acknowledgments until next received packet
-        crcOk = false;
-
-        /* We do not actually do CRC here, but add the transmission latency for the 2 CRC bytes. */
-        final double txLatency = (ongoingTxPacket.data().length + 2) * 2 * SYMBOL_PERIOD;
-        cpu.scheduleTimeEventMillis(txFrameDoneEvent, txLatency);
-      }
-      break;
 
       case RX_WAIT:
         setSymbolEvent(8);
@@ -545,27 +437,12 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
       case IDLE:
         status &= ~STATUS_RSSI_VALID;
         setMode(MODE_TXRX_OFF);
-        updateCCA();
         break;
 
-      case TX_ACK_CALIBRATE:
-        /* TX active during ACK + NOTE: we ignore the SFD when receiving full packets, so
-         * we need to add another extra 2 symbols here to get a correct timing */
-        status |= STATUS_TX_ACTIVE;
-        setSymbolEvent(12 + 2 + 2);
-        setMode(MODE_TXRX_ON);
-        break;
-      case TX_ACK_PREAMBLE:
-        logw(WarningType.EMULATION_ERROR, "setState(TX_ACK_PREAMBLE) not implemented");
-        break;
-      case TX_ACK:
-        logw(WarningType.EMULATION_ERROR, "setState(TX_ACK) not implemented");
-        break;
       case RX_FRAME:
         /* mark position of frame start - for rejecting when address is wrong */
         rxFIFO.mark();
         rxread = 0;
-        frameRejected = false;
         shouldAck = false;
         crcOk = false;
         break;
@@ -580,54 +457,26 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     return true;
   }
 
-  private void rejectFrame() {
-    // Immediately jump to SFD Search again... something more???
-    /* reset state */
-    rxFIFO.restore();
-    setSFD(false);
-    setFIFO(!rxFIFO.isEmpty());
-    frameRejected = true;
-  }
+  /**
+   * Generate a new packet from the TX FIFIO
+   */
+  private void pendTxFromFifo(boolean txOnCca) {
+    final byte channel = (byte) (memory[RAM_TXFIFO] & 0xff);
+    byte len = (byte) (memory[RAM_TXFIFO + 1] & 0xff);
+    final byte maxlen = TXFIFO_SZ - 2;
+    if (len > maxlen) {
+      logger.logw(this, WarningType.EXECUTION, "Transceiver: Warning - packet size too large: " + (len & 0xff));
+      len = maxlen;
+    }
 
-  private void setReg(int address, int data) {
-    int oldValue = registers[address];
-    switch(address){
-      case REG_RSSI:
-        registers[address] = (registers[address] & 0xFF) | (data & 0xFF00);
-        break;
-      default:
-        registers[address] = data;
-    }
-    switch(address) {
-      case REG_IOCFG0:
-        fifopThr = data & FIFOP_THR;
-        if (logLevel > INFO) log("IOCFG0: 0x" + Utils.hex16(oldValue) + " => 0x" + Utils.hex16(data));
-        if ((oldValue & POLARITY_MASK) != (data & POLARITY_MASK)) {
-          // Polarity has changed - must update pins
-          setFIFOP(currentFIFOP);
-          setFIFO(currentFIFO);
-          setSFD(currentSFD);
-          setCCA(currentCCA);
-        }
-        break;
-      case REG_IOCFG1:
-        if (logLevel > INFO)
-          log("IOCFG1: SFDMUX "
-              + ((registers[address] & SFDMUX) >> SFDMUX_SHIFT)
-              + " CCAMUX: " + ((registers[address] & CCAMUX) >> CCAMUX_SHIFT));
-        updateCCA();
-        break;
-      case REG_MDMCTRL0:
-        addressDecode = (data & ADR_DECODE) != 0;
-        autoCRC = (data & ADR_AUTOCRC) != 0;
-        autoAck = (data & AUTOACK) != 0;
-        break;
-      case REG_FSCTRL: {
-        logw(WarningType.EXECUTION, "setReg(FSCTRL) not supported");
-        return;
-      }
-    }
-    configurationChanged(address, oldValue, data);
+    byte data[] = new byte[len];
+    for (int i = 0; i < len; i++)
+      data[i] = (byte) (memory[RAM_TXFIFO + 2 + i] & 0xff);
+
+    var cm = getChannel(channel);
+    cm.pendTx(data, txOnCca);
+
+    txfifoFlush = true;
   }
 
   @Override
@@ -643,7 +492,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
       // Chip is not selected
 
     } else if (stateMachine != RadioState.VREG_OFF) {
-      switch(state) {
+      switch (state) {
         case WAITING:
           if ((data & FLAG_READ) != 0) {
             state = SpiState.READ_REGISTER;
@@ -786,6 +635,46 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     }
   }
 
+  private void setReg(int address, int data) {
+    int oldValue = registers[address];
+    switch (address) {
+      case REG_RSSI:
+        registers[address] = (registers[address] & 0xFF) | (data & 0xFF00);
+        break;
+      default:
+        registers[address] = data;
+    }
+    switch (address) {
+      case REG_IOCFG0:
+        fifopThr = data & FIFOP_THR;
+        if (logLevel > INFO) log("IOCFG0: 0x" + Utils.hex16(oldValue) + " => 0x" + Utils.hex16(data));
+        if ((oldValue & POLARITY_MASK) != (data & POLARITY_MASK)) {
+          // Polarity has changed - must update pins
+          setFIFOP(currentFIFOP);
+          setFIFO(currentFIFO);
+          setSFD(currentSFD);
+          setCCA(currentCCA);
+        }
+        break;
+      case REG_IOCFG1:
+        if (logLevel > INFO)
+          log("IOCFG1: SFDMUX "
+              + ((registers[address] & SFDMUX) >> SFDMUX_SHIFT)
+              + " CCAMUX: " + ((registers[address] & CCAMUX) >> CCAMUX_SHIFT));
+        break;
+      case REG_MDMCTRL0:
+        addressDecode = (data & ADR_DECODE) != 0;
+        autoCRC = (data & ADR_AUTOCRC) != 0;
+        autoAck = (data & AUTOACK) != 0;
+        break;
+      case REG_FSCTRL: {
+        logw(WarningType.EXECUTION, "setReg(FSCTRL) not supported");
+        return;
+      }
+    }
+    configurationChanged(address, oldValue, data);
+  }
+
   // Needs to get information about when it is possible to write
   // next data...
   private void strobe(int data) {
@@ -794,7 +683,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
       log("Strobe on: " + Utils.hex8(data) + " => " + Reg.values()[data]);
     }
 
-    if( (stateMachine == RadioState.POWER_DOWN) && (data != REG_SXOSCON) ) {
+    if ((stateMachine == RadioState.POWER_DOWN) && (data != REG_SXOSCON)) {
       if (logLevel > INFO) log("Got command strobe: " + data + " in POWER_DOWN.  Ignoring.");
       return;
     }
@@ -818,9 +707,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
       case REG_SRFOFF:
         if (logLevel > INFO) {
           log("Strobe RXTX-OFF!!! at " + cpu.cycles);
-          if (stateMachine == RadioState.TX_ACK ||
-              stateMachine == RadioState.TX_FRAME ||
-              stateMachine == RadioState.RX_FRAME) {
+          if (/* TODO */stateMachine == RadioState.RX_FRAME) {
             log("WARNING: turning off RXTX during " + stateMachine);
           }
         }
@@ -828,41 +715,21 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         break;
       case REG_STXON:
         // State transition valid from IDLE state or all RX states
-        if( (stateMachine == RadioState.IDLE) ||
-            (stateMachine == RadioState.RX_CALIBRATE) ||
-            (stateMachine == RadioState.RX_SFD_SEARCH) ||
-            (stateMachine == RadioState.RX_FRAME) ||
-            (stateMachine == RadioState.RX_OVERFLOW) ||
-            (stateMachine == RadioState.RX_WAIT)) {
-          status |= STATUS_TX_ACTIVE;
-          setState(RadioState.TX_CALIBRATE);
+        if (/* TODO */(stateMachine != RadioState.VREG_OFF &&
+             stateMachine != RadioState.POWER_DOWN)) {
           if (sendEvents) {
             sendEvent("STXON", null);
           }
-          // Starting up TX subsystem - indicate that we are in TX mode!
-          if (logLevel > INFO) log("Strobe STXON - transmit on! at " + cpu.cycles);
+          pendTxFromFifo(false);
         }
         break;
       case REG_STXONCCA:
-        // Only valid from all RX states,
-        // since CCA requires ??(look this up) receive symbol periods to be valid
-        if( (stateMachine == RadioState.RX_CALIBRATE) ||
-            (stateMachine == RadioState.RX_SFD_SEARCH) ||
-            (stateMachine == RadioState.RX_FRAME) ||
-            (stateMachine == RadioState.RX_OVERFLOW) ||
-            (stateMachine == RadioState.RX_WAIT)) {
-
+        if (/* TODO */(stateMachine != RadioState.VREG_OFF &&
+            stateMachine != RadioState.POWER_DOWN)) {
           if (sendEvents) {
             sendEvent("STXON_CCA", null);
           }
-
-          if(cca) {
-            status |= STATUS_TX_ACTIVE;
-            setState(RadioState.TX_CALIBRATE);
-            if (logLevel > INFO) log("Strobe STXONCCA - transmit on! at " + cpu.cycles);
-          }else{
-            if (logLevel > INFO) log("STXONCCA Ignored, CCA false");
-          }
+          pendTxFromFifo(true);
         }
         break;
       case REG_SFLUSHRX:
@@ -882,13 +749,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         break;
       case REG_SACK:
       case REG_SACKPEND:
-        // Set the frame pending flag for all future autoack based on SACK/SACKPEND
-        ackFramePending = data == REG_SACKPEND;
-        if (stateMachine == RadioState.RX_FRAME) {
-          shouldAck = true;
-        } else if (crcOk) {
-          setState(RadioState.TX_ACK_CALIBRATE);
-        }
+        logw(WarningType.EXECUTION, "Not implemented");
         break;
       default:
         if (logLevel > INFO) {
@@ -925,7 +786,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     setSFD(false);
     setFIFOP(false);
     setFIFO(false);
-    overflow = false;
     /* goto RX Calibrate */
     if( (stateMachine == RadioState.RX_CALIBRATE) ||
         (stateMachine == RadioState.RX_SFD_SEARCH) ||
@@ -941,23 +801,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   // TODO: update any pins here?
   private void flushTX() {
     txCursor = 0;
-  }
-
-  private void updateCCA() {
-    boolean oldCCA = cca;
-    int ccaMux = (registers[REG_IOCFG1] & CCAMUX);
-
-    if (ccaMux == CCAMUX_CCA) {
-      /* If RSSI is less than -95 then we have CCA / clear channel! */
-      cca = (status & STATUS_RSSI_VALID) > 0 && (byte)(registers[REG_RSSI] & 0xFF) < (byte)(registers[REG_RSSI] >> 8);
-      //log("CCA: " + cca  + " - " +  (byte)(registers[REG_RSSI] & 0xFF) + " "  + (byte)(registers[REG_RSSI] >> 8));
-    } else if (ccaMux == CCAMUX_XOSC16M_STABLE) {
-      cca = (status & STATUS_XOSC16M_STABLE) > 0;
-    }
-
-    if (cca != oldCCA) {
-      setInternalCCA(cca);
-    }
   }
 
   private void setInternalCCA(boolean clear) {
@@ -1008,7 +851,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     setFIFOP(true);
     setFIFO(false);
     setSFD(false);
-    overflow = true;
     shouldAck = false;
     setState(RadioState.RX_OVERFLOW);
   }
@@ -1056,7 +898,6 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
 
     rssi = power;
     registers[REG_RSSI] = (registers[REG_RSSI] & 0xFF00) | ((power - RSSI_OFFSET) & 0xFF);
-    updateCCA();
   }
 
   public int getRSSI() {
@@ -1182,26 +1023,121 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   /*****************************************************************************
    * The Packet Layer
    *****************************************************************************/
-  private static class ChannelBuffer {
+  private static class ChannelManager {
+    private final Transceiver trx;
+    private final byte channel;
+    private final Random random;
+
+    ChannelManager(Transceiver trx, byte channel, int seed) {
+      this.trx = trx;
+      this.channel = channel;
+      this.random = new Random(seed);
+      clearRx();
+    }
+
+    /* RX */
     private final List<PacketId> startedReceptions = new ArrayList<>();
     private final Set<PacketId> ongoingReceptions = new HashSet<>();
     private final Map<PacketId, Packet> finishedReceptions = new HashMap<>();
 
-    private final Transceiver trx;
-    private final int channel;
-    private final Random random;
-
     private List<Packet> decodedPackets;
     private byte detectedPacketNum;
 
-    ChannelBuffer(Transceiver trx, int channel, int seed) {
-      this.trx = trx;
-      this.channel = channel;
-      this.random = new Random(seed);
-      clear();
+    /* TX */
+    private enum TxState {
+      IDLE,
+      BACKOFF,
+      CALIBRATE,
+      PREAMBLE,
+      FRAME,
     }
 
-    void clear() {
+    private double backoffBase = 60 * SYMBOL_PERIOD;
+    private int backoffExp = 3;
+    private TxState txState = TxState.IDLE;
+    private long txCounter = 0;
+    private final Queue<Packet> txQueue = new LinkedList<>();
+    private final Queue<Boolean> txOnCca = new LinkedList<>();
+
+    private final TimeEvent txBackoffDoneEvent = new TimeEvent(0, "TX Backoff Done") {
+      @Override
+      public void execute(long t) {
+        assert txState == TxState.BACKOFF && !txQueue.isEmpty() && txOnCca.peek() == true;
+        if (isReceiving()) {
+          /* Start another backoff. */
+          startBackoff();
+        } else {
+          /* Otherwise, start transmission. */
+          doTx();
+        }
+      }
+    };
+
+    private final TimeEvent txCalibrationDoneEvent = new TimeEvent(0, "TX Calibration Done") {
+      @Override
+      public void execute(long t) {
+        assert txState == TxState.CALIBRATE;
+        txState = TxState.PREAMBLE;
+        trx.channelTxStart(txQueue.peek().id());
+        trx.cpu.scheduleTimeEventMillis(txPreambleDoneEvent, 12 * SYMBOL_PERIOD);
+      }
+    };
+
+    private final TimeEvent txPreambleDoneEvent = new TimeEvent(0, "TX Preamble Done") {
+      @Override
+      public void execute(long t) {
+        assert txState == TxState.PREAMBLE;
+        txState = TxState.FRAME;
+        /* We do not actually do CRC here, but add the transmission latency for the 2 CRC bytes. */
+        final double txLatency = (txQueue.peek().data().length + 2) * 2 * SYMBOL_PERIOD;
+        trx.cpu.scheduleTimeEventMillis(txFrameDoneEvent, 12 * txLatency);
+      }
+    };
+
+    private final TimeEvent txFrameDoneEvent = new TimeEvent(0, "TX Frame Done") {
+      @Override
+      public void execute(long t) {
+        assert txState == TxState.FRAME;
+        txState = TxState.IDLE;
+        trx.channelTxFinished(txQueue.peek().id(), txQueue.peek());
+        txQueue.remove();
+        txOnCca.remove();
+      }
+    };
+
+    void pendTx(byte[] data, boolean onCca) {
+      txQueue.add(new Packet(new PacketId(trx, channel, txCounter++), data));
+      txOnCca.add(onCca);
+      tryTx();
+    }
+
+    void tryTx() {
+      if (txState == TxState.IDLE && !txQueue.isEmpty()) {
+        if (txOnCca.peek()) {
+          if (isReceiving()) {
+            startBackoff();
+          } else {
+            doTx();
+          }
+        } else {
+          doTx();
+        }
+      }
+    }
+
+    private void startBackoff() {
+      txState = TxState.BACKOFF;
+      double backoff = random.nextInt(2 << backoffExp) * backoffBase;
+      trx.cpu.scheduleTimeEventMillis(txBackoffDoneEvent, backoff);
+    }
+
+    private void doTx() {
+      assert txState == TxState.BACKOFF || txState == TxState.IDLE || !txQueue.isEmpty();
+      txState = TxState.CALIBRATE;
+      trx.cpu.scheduleTimeEventMillis(txCalibrationDoneEvent, 12 * SYMBOL_PERIOD);
+    }
+
+    void clearRx() {
       startedReceptions.clear();
       ongoingReceptions.clear();
       finishedReceptions.clear();
@@ -1294,8 +1230,9 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   }
 
   private static abstract class Deliverable {
-    static final char PACKET = 0;
-    static final char PACKET_NUM = 1;
+    static final char PACKET = 1;
+    static final char PACKET_NUM = 2;
+
     abstract byte[] toBinary();
   }
 
@@ -1314,7 +1251,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
         bin = new byte[data.length + 3];
         bin[0] = PACKET;
         bin[1] = channel;
-        bin[2] = (byte)data.length;
+        bin[2] = (byte) data.length;
         System.arraycopy(data, 0, bin, 3, data.length);
       }
       return bin;
@@ -1342,11 +1279,36 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     }
   }
 
-  private long txCounter = 0;
-  private Packet ongoingTxPacket = null;
-  private final Map<Byte, ChannelBuffer> channels = new HashMap<>();
+  private final Map<Byte, ChannelManager> channels = new HashMap<>();
 
   private final Queue<Deliverable> deliverableQ = new LinkedList<>();
+
+  private ChannelManager getChannel(byte c) {
+    if (!channels.containsKey(c))
+      channels.put(c, new ChannelManager(Transceiver.this, c, this.hashCode() + c));
+    return channels.get(c);
+  }
+
+  private void channelPendDeliverable(Deliverable deliverable) {
+    deliverableQ.add(deliverable);
+    tryNewDelivery();
+  }
+
+  private void channelTxStart(PacketId id) {
+    if (logLevel > INFO) log("TX started: " + id);
+    if (packetListener != null) {
+      /* Notify the listeners of the delivery start. */
+      packetListener.packetDeliveryStarted(id);
+    }
+  }
+
+  private void channelTxFinished(PacketId id, Packet pkt) {
+    if (logLevel > INFO) log("TX finished: " + pkt.id());
+    if (packetListener != null) {
+      /* Notify the listeners of the delivery end. */
+      packetListener.packetDeliveryFinished(id, pkt);
+    }
+  }
 
   private boolean tryNewDelivery() {
     /* We only do the delivery when we can issue an interrupt at once. The
@@ -1380,40 +1342,13 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
     return delivered;
   }
 
-  private void pendDeliverable(Deliverable deliverable) {
-    deliverableQ.add(deliverable);
-    tryNewDelivery();
-  }
-
-  /**
-   * Generate a new packet from the TX FIFIO
-   */
-  private Packet packetFromTxFifo() {
-    byte channel = (byte) (memory[RAM_TXFIFO] & 0xff);
-    int len = memory[RAM_TXFIFO+1] & 0xff;
-    final int maxlen = TXFIFO_SZ - 2;
-    if (len > maxlen) {
-      logger.logw(this, WarningType.EXECUTION, "Transceiver: Warning - packet size too large: " + (len & 0xff));
-      len = maxlen;
-    }
-
-    byte data[] = new byte[len];
-    for (int i = 0; i < len; i++)
-      data[i] = (byte)(memory[RAM_TXFIFO + 2 + i] & 0xff);
-    var id = new PacketId(Transceiver.this, channel, txCounter++);
-    return new Packet(id, data);
-  }
-
   /*****************************************************************************
    * PacketListener APIs
    *****************************************************************************/
   @Override
   public void packetDeliveryStarted(PacketId id) {
     final byte channel = id.channel();
-    ChannelBuffer cbuf = channels.getOrDefault(channel,
-        new ChannelBuffer(Transceiver.this, channel, this.hashCode() + channel));
-    cbuf.receptionStarted(id);
-    channels.put(channel, cbuf);
+    getChannel(channel).receptionStarted(id);
     /* TODO: If SFD interrupt is needed for the firmware, we may need to set it
      * here. But still not quite sure how to combine this with packet number detection
      * success probability when there is collision.
@@ -1423,19 +1358,18 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   @Override
   public void packetDeliveryFinished(PacketId id, Packet packet) {
     final byte channel = id.channel();
-    ChannelBuffer cbuf = channels.get(channel);
+    ChannelManager cbuf = channels.get(channel);
     cbuf.receptionFinished(id, packet);
 
     if (!cbuf.isReceiving()) {
       var decoded = cbuf.decode();
-      int num = cbuf.getDetectedPacketNum();
       if (decoded) {
         for (var pkt: cbuf.getDecodedPacket())
-          pendDeliverable(new DecodedPacket(pkt));
+          channelPendDeliverable(new DecodedPacket(pkt));
       } else {
-        pendDeliverable(new DetectedPacketNum(channel, cbuf.getDetectedPacketNum()));
+        channelPendDeliverable(new DetectedPacketNum(channel, cbuf.getDetectedPacketNum()));
       }
-      cbuf.clear();
+      cbuf.clearRx();
     }
   }
 
@@ -1478,7 +1412,7 @@ public class Transceiver extends Chip implements USARTListener, PacketListener, 
   public String info() {
     return " VREG_ON: " + on + "  Chip Select: " + chipSelect +
         "  OSC Stable: " + ((status & STATUS_XOSC16M_STABLE) > 0) +
-        "\n RSSI Valid: " + ((status & STATUS_RSSI_VALID) > 0) + "  CCA: " + cca +
+        "\n RSSI Valid: " + ((status & STATUS_RSSI_VALID) > 0) +
         "\n FIFOP: " + currentFIFOP + " threshold: " + fifopThr +
         " polarity: " + ((registers[REG_IOCFG0] & FIFOP_POLARITY) == FIFOP_POLARITY) +
         "  FIFO: " + currentFIFO + "  SFD: " + currentSFD +
